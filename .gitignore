@@ -2,3 +2,5 @@ deps/downloads/
 deps/release/
 deps/debug/
 bin/
+.envrc
+.venv
