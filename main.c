@@ -2,14 +2,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include <omp.h>
-#include <arkode/arkode_arkstep.h>
-//#include <arkode/arkode_bandpre.h>
-#include <nvector/nvector_openmp.h>
-#include <sunlinsol/sunlinsol_band.h>
-//#include <sunlinsol/sunlinsol_pcg.h>
-#include <sunmatrix/sunmatrix_band.h>
+#include <cvode/cvode.h>
+#include <cvode/cvode_bandpre.h>
+#include <nvector/nvector_serial.h>
 #include <sundials/sundials_types.h>
+#include <sunlinsol/sunlinsol_spgmr.h>
+#include <sunnonlinsol/sunnonlinsol_newton.h>
 
 #define STENCIL_SIZE 5
 #define BIH_STENCIL_SIZE 7
@@ -18,7 +16,7 @@ static const double TIME_STEP = 0.3;
 static const double GRID_STEP = 0.8;
 static const double GS2 = 1.0 / (GRID_STEP * GRID_STEP);
 
-static const sunindextype S = 1024;
+static const sunindextype S = 512;
 static const sunindextype N = S * S;
 static const int THREADS = 8;
 
@@ -52,12 +50,14 @@ static const int BL_STENCIL[BIH_STENCIL_SIZE][BIH_STENCIL_SIZE] = {
 };
 
 // Points on derivative stencil
-static const int D_STENCIL[STENCIL_SIZE][STENCIL_SIZE] = {
-    { 0,  1,  2,  1,  0},
-    { 3,  4,  5,  4,  3},
-    { 0,  0,  0,  0,  0},
-    {-3, -4, -5, -4, -3},
-    { 0, -1, -2, -1,  0},
+static const int D_STENCIL[BIH_STENCIL_SIZE][BIH_STENCIL_SIZE] = {
+    { 0,  0,  0,  0,  0,  0, 0},
+    { 0,  0,  1,  2,  1,  0, 0},
+    { 0,  3,  4,  5,  4,  3, 0},
+    { 0,  0,  0,  0,  0,  0, 0},
+    { 0, -3, -4, -5, -4, -3, 0},
+    { 0,  0, -1, -2, -1,  0, 0},
+    { 0,  0,  0,  0,  0,  0, 0},
 };
 
 // Coordinate shift to center the laplacian / derivative stencil
@@ -66,7 +66,7 @@ static const int SHIFT = (STENCIL_SIZE - 1) / 2;
 // Same for biharmonic stencil
 static const int BIH_SHIFT = (BIH_STENCIL_SIZE - 1) / 2;
 
-static const double C_MUL = 5;
+static const double C_MUL = 50;
 static const double C_SCALE[6][2] = {
     {0.05, 0.9},
     {0.003, 0.025},
@@ -76,41 +76,9 @@ static const double C_SCALE[6][2] = {
     {0.007, 0.025}
 };
 
-static int rhs_ex(realtype t, N_Vector y_vec, N_Vector ydot_vec, void *user_data){
+static int rhs(realtype t, N_Vector y_vec, N_Vector ydot_vec, void *user_data){
     realtype *y, *ydot;
-    double dx, dy;
-
-    y = N_VGetArrayPointer(y_vec);
-    ydot = N_VGetArrayPointer(ydot_vec);
-
-    for(int ii = 0; ii < S; ii ++){
-        for(int jj = 0; jj < S; jj ++){
-            dx = dy = 0;
-
-            for(int i = 0; i < STENCIL_SIZE; i ++){
-                for(int j = 0; j < STENCIL_SIZE; j ++){
-                    int coord = (ii + i + S - SHIFT) % S;
-                    coord *= S;
-                    coord += (jj + j + S - SHIFT) % S;
-
-                    dx += y[coord] * D_COEFF[5 + D_STENCIL[i][j]];
-                    dy += y[coord] * D_COEFF[5 + D_STENCIL[j][i]];
-                }
-            }
-
-            dx /= GRID_STEP;
-            dy /= GRID_STEP;
-
-            ydot[ii * S + jj] = -0.5 * (dx * dx + dy * dy);
-        }
-    }
-
-    return 0;
-}
-
-static int rhs_im(realtype t, N_Vector y_vec, N_Vector ydot_vec, void *user_data){
-    realtype *y, *ydot;
-    double out;
+    double out, dx, dy;
 
     y = N_VGetArrayPointer(y_vec);
     ydot = N_VGetArrayPointer(ydot_vec);
@@ -118,17 +86,24 @@ static int rhs_im(realtype t, N_Vector y_vec, N_Vector ydot_vec, void *user_data
     for(int ii = 0; ii < S; ii ++){
         for(int jj = 0; jj < S; jj ++){
             out = 0;
+            dx = dy = 0;
 
             for(int i = 0; i < BIH_STENCIL_SIZE; i ++){
                 for(int j = 0; j < BIH_STENCIL_SIZE; j ++){
                     int coord;
-
                     coord = (ii + i + S - BIH_SHIFT) % S;
                     coord *= S;
                     coord += (jj + j + S - BIH_SHIFT) % S;
                     out += y[coord] * BL_COEFF[BL_STENCIL[i][j]];
+                    dx += y[coord] * D_COEFF[5 + D_STENCIL[i][j]];
+                    dy += y[coord] * D_COEFF[5 + D_STENCIL[j][i]];
                 }
+
             }
+
+            dx /= GRID_STEP;
+            dy /= GRID_STEP;
+            out += 0.5 * (dx * dx + dy * dy);
 
             ydot[ii * S + jj] = -out;
         }
@@ -138,9 +113,8 @@ static int rhs_im(realtype t, N_Vector y_vec, N_Vector ydot_vec, void *user_data
 }
 
 int main(void){
-    N_Vector gridvec = N_VNew_OpenMP(N, THREADS);
-    realtype *grid_data = N_VGetArrayPointer_OpenMP(gridvec);
-    SUNMatrix matrix = SUNBandMatrix(N, 1, 1);
+    N_Vector gridvec = N_VNew_Serial(N);
+    realtype *grid_data = N_VGetArrayPointer_Serial(gridvec);
 
     fprintf(stderr, "Data initialized\n");
 
@@ -149,31 +123,41 @@ int main(void){
     for(int i = 0; i < N; i ++){
         int x  = i % S;
         int y = i / S;
-        grid_data[i] = exp(-100 * hypot(x - S/2.0, y - S/2.0)/hypot(S, S));;
+        grid_data[i] = drand48(); //exp(-100 * hypot(x - S/2.0, y - S/2.0)/hypot(S, S));;
     }
 
-    void *ark = ARKStepCreate(rhs_ex, rhs_im, 0, gridvec);
-    SUNLinearSolver lin_solver = SUNLinSol_Band(gridvec, matrix);
-    //SUNLinearSolver lin_solver = SUNLinSol_PCG(gridvec, PREC_LEFT, 15);
+    for(int i = 0; i < N; i ++){
+        int x  = i % S;
+        int y = i / S;
+        grid_data[i] += grid_data[(i + 1) % N];
+        grid_data[i] += grid_data[(i + N - 1) % N];
+        grid_data[i] += grid_data[(i + S) % N];
+        grid_data[i] += grid_data[(i + N - S) % N];
+        grid_data[i] /= 5;
+    }
 
-    fprintf(stderr, "Linear solver initialized\n");
 
-    ARKStepSStolerances(ark, REL_TOL, ABS_TOL);
-    ARKStepSetLinearSolver(ark, lin_solver, matrix);
-    ARKStepSetLinear(ark, 0);
-    //ARKBandPrecInit(ark, N, 1, 1);
-    //ARKStepSetDiagnostics(ark, stderr);
-    ARKStepSetOrder(ark, 5);
-    ARKStepSetOptimalParams(ark);
+    void *cv = CVodeCreate(CV_BDF);
+    CVodeInit(cv, rhs, 0, gridvec);
+
+    CVodeSStolerances(cv, REL_TOL, ABS_TOL);
 
     fprintf(stderr, "Set up solver\n");
+
+    SUNLinearSolver linsol = SUNLinSol_SPGMR(gridvec, PREC_NONE, 15);
+    CVodeSetLinearSolver(cv, linsol, NULL);
+
+    SUNNonlinearSolver nonlinsol = SUNNonlinSol_Newton(gridvec);
+    CVodeSetNonlinearSolver(cv, nonlinsol);
+
+    //CVBandPrecInit(cv, N, 3, 3);
 
     realtype t, tret;
     t = TIME_STEP;
 
     int r = 0;
     while (r == 0) {
-        r = ARKStepEvolve(ark, t, gridvec, &tret, ARK_NORMAL);
+        r = CVode(cv, t, gridvec, &tret, CV_NORMAL);
         fprintf(stderr, "Time step @%lf\n", t);
         t += TIME_STEP;
         printf("P6\n%d %d\n255\n", (int)S, (int)S);
