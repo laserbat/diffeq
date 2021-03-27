@@ -35,4 +35,4 @@ fi
 
 gcc $CFLAGS \
     -I "$DEPS/include" $SRC -o "$OUT" -L "$DEPS/lib" \
-    $LIBS -Wl,-rpath="\$ORIGIN/$DEPS/lib"
+    $LIBS -Wl,-rpath="\$ORIGIN/../$DEPS/lib"

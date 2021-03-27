@@ -1,0 +1,2 @@
+CompileFlags:
+ Add: [-Ideps/debug/include, -Ideps/release/include]

@@ -8,7 +8,6 @@ OPEN_BLAS_VER="0.3.13"
 SUNDIALS_VER="5.7.0"
 ARKODE_VER="4.7.0"
 
-OPENBLAS_RELEASE_CFLAGS="-Ofast -fno-strict-aliasing -march=native -flto=$COMPILE_THREADS"
 ARKODE_RELEASE_FLAGS="-Ofast -march=native -flto=$COMPILE_THREADS"
 
 mkdir -p downloads
@@ -42,9 +41,7 @@ if [[ -n "$DEBUG" ]]; then
         DEBUG=1 \
         BUILD_RELAPACK=1 USE_OPENMP=1
 else
-    make -j "$COMPILE_THREADS" \
-        COMMON_OPT="$OPENBLAS_RELEASE_CFLAGS" \
-        BUILD_RELAPACK=1 USE_OPENMP=1
+    make -j "$COMPILE_THREADS" BUILD_RELAPACK=1 USE_OPENMP=1
 fi
 
 make PREFIX="../" install
