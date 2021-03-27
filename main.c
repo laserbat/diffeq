@@ -13,7 +13,7 @@
 #define STENCIL_SIZE 5
 #define BIH_STENCIL_SIZE 7
 
-static const double TIME_STEP = 0.1;
+static const double TIME_STEP = 0.3;
 static const double GRID_STEP = 0.8;
 static const double GS2 = 1.0 / (GRID_STEP * GRID_STEP);
 
@@ -124,7 +124,7 @@ int main(void){
     for(int i = 0; i < N; i ++){
         int x  = i % S;
         int y = i / S;
-        grid_data[i] = exp(-50 * hypot(x - S/2.0, y - S/2.0)/hypot(S, S));;
+        grid_data[i] = exp(-500 * hypot(x - S/2.0, y - S/2.0)/hypot(S, S));;
     }
 
     for(int i = 0; i < N; i ++){

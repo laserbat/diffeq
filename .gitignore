@@ -4,3 +4,4 @@ deps/debug/
 bin/
 .envrc
 .venv
+*.ppm
