@@ -4,51 +4,44 @@
 #include <math.h>
 #include <omp.h>
 #include <arkode/arkode_arkstep.h>
+//#include <arkode/arkode_bandpre.h>
 #include <nvector/nvector_openmp.h>
 #include <sunlinsol/sunlinsol_band.h>
+//#include <sunlinsol/sunlinsol_pcg.h>
 #include <sunmatrix/sunmatrix_band.h>
 #include <sundials/sundials_types.h>
 
 #define STENCIL_SIZE 5
 #define BIH_STENCIL_SIZE 7
 
-static const double TIME_STEP = 1;
+static const double TIME_STEP = 0.3;
 static const double GRID_STEP = 0.8;
+static const double GS2 = 1.0 / (GRID_STEP * GRID_STEP);
 
-static const sunindextype S = 512;
+static const sunindextype S = 1024;
 static const sunindextype N = S * S;
 static const int THREADS = 8;
 
 static const realtype REL_TOL = 1.e-8;
-static const realtype ABS_TOL = 1.e-12;
+static const realtype ABS_TOL = 1.e-8;
 
-// Coefficients for laplacian stencil
-static const double L_COEFF[6] = {
-    0, -1.0/30.0, -1.0/60.0, 4.0/15.0, 13.0/15.0, -21.0/5.0
-};
-
-// Biharmonic
-static const double B_COEFF[9] = {
-    0, -17.0/180.0, 1.0/45.0, -29.0/180.0, 47.0/45.0,
-    7.0/30.0, -187.0/90.0, -191.0/45.0, 779.0/45.0
+static const double BL_COEFF[9] = {
+    0, (-17.0/180.0) * GS2 * GS2, (1.0/45.0) * GS2 * GS2, (-29.0/180.0) * GS2 * GS2,
+    ((47.0/45.0) * GS2 - 1.0/30.0) * GS2,
+    ((7.0/30.0) * GS2 - 1.0/60.0) * GS2,
+    ((-187.0/90.0) * GS2 + 4.0/15.0) * GS2,
+    ((-191.0/45.0) * GS2 + 13.0/15.0) * GS2,
+    ((779.0/45.0) * GS2 -21.0/5.0) * GS2
 };
 
 // Derivative
-static const double D_COEFF[6] = {
-    0, 1.0/240.0, 3.0/40.0, -1.0/80.0, 1.0/24.0, -29.0/40.0
+static const double D_COEFF[11] = {
+    29.0/40.0, -1.0/24.0, 1.0/80.0, -3.0/40.0, -1.0/240.0,
+    0,
+    1.0/240.0, 3.0/40.0, -1.0/80.0, 1.0/24.0, -29.0/40.0
 };
 
-// Points on laplacian stencil
-static const int L_STENCIL[STENCIL_SIZE][STENCIL_SIZE] = {
-    {0, 1, 2, 1, 0},
-    {1, 3, 4, 3, 1},
-    {2, 4, 5, 4, 2},
-    {1, 3, 4, 3, 1},
-    {0, 1, 2, 1, 0},
-};
-
-// Points on biharmonic stencil
-static const int B_STENCIL[BIH_STENCIL_SIZE][BIH_STENCIL_SIZE] = {
+static const int BL_STENCIL[BIH_STENCIL_SIZE][BIH_STENCIL_SIZE] = {
     {0, 0, 1, 2, 1, 0, 0},
     {0, 3, 4, 5, 4, 3, 0},
     {1, 4, 6, 7, 6, 4, 1},
@@ -93,31 +86,22 @@ static int rhs_ex(realtype t, N_Vector y_vec, N_Vector ydot_vec, void *user_data
     for(int ii = 0; ii < S; ii ++){
         for(int jj = 0; jj < S; jj ++){
             dx = dy = 0;
+
             for(int i = 0; i < STENCIL_SIZE; i ++){
                 for(int j = 0; j < STENCIL_SIZE; j ++){
                     int coord = (ii + i + S - SHIFT) % S;
                     coord *= S;
                     coord += (jj + j + S - SHIFT) % S;
 
-                    if(D_STENCIL[i][j] < 0) {
-                        dx += y[coord] * -D_COEFF[-(D_STENCIL[i][j])];
-                    } else {
-                        dx += y[coord] * D_COEFF[D_STENCIL[i][j]];
-                    }
-
-                    if(D_STENCIL[j][i] < 0) {
-                        dy += y[coord] * -D_COEFF[-(D_STENCIL[j][i])];
-                    } else {
-                        dy += y[coord] * D_COEFF[D_STENCIL[j][i]];
-                    }
-
+                    dx += y[coord] * D_COEFF[5 + D_STENCIL[i][j]];
+                    dy += y[coord] * D_COEFF[5 + D_STENCIL[j][i]];
                 }
             }
 
             dx /= GRID_STEP;
             dy /= GRID_STEP;
 
-            ydot[ii * S + jj] = -0.5 * (pow(dx, 2) + pow(dy, 2));
+            ydot[ii * S + jj] = -0.5 * (dx * dx + dy * dy);
         }
     }
 
@@ -126,36 +110,27 @@ static int rhs_ex(realtype t, N_Vector y_vec, N_Vector ydot_vec, void *user_data
 
 static int rhs_im(realtype t, N_Vector y_vec, N_Vector ydot_vec, void *user_data){
     realtype *y, *ydot;
-    double laplacian, biharmonic;
+    double out;
 
     y = N_VGetArrayPointer(y_vec);
     ydot = N_VGetArrayPointer(ydot_vec);
 
     for(int ii = 0; ii < S; ii ++){
         for(int jj = 0; jj < S; jj ++){
-            laplacian = biharmonic = 0;
+            out = 0;
+
             for(int i = 0; i < BIH_STENCIL_SIZE; i ++){
                 for(int j = 0; j < BIH_STENCIL_SIZE; j ++){
                     int coord;
 
-                    if (i < STENCIL_SIZE && j < STENCIL_SIZE){
-                        coord = (ii + i + S - SHIFT) % S;
-                        coord *= S;
-                        coord += (jj + j + S - SHIFT) % S;
-                        laplacian  += y[coord] * L_COEFF[L_STENCIL[i][j]];
-                    }
-
                     coord = (ii + i + S - BIH_SHIFT) % S;
                     coord *= S;
                     coord += (jj + j + S - BIH_SHIFT) % S;
-                    biharmonic += y[coord] * B_COEFF[B_STENCIL[i][j]];
+                    out += y[coord] * BL_COEFF[BL_STENCIL[i][j]];
                 }
             }
 
-            laplacian /= pow(GRID_STEP, 2);
-            biharmonic /= pow(GRID_STEP, 4);
-
-            ydot[ii * S + jj] = -(laplacian + biharmonic);
+            ydot[ii * S + jj] = -out;
         }
     }
 
@@ -179,13 +154,15 @@ int main(void){
 
     void *ark = ARKStepCreate(rhs_ex, rhs_im, 0, gridvec);
     SUNLinearSolver lin_solver = SUNLinSol_Band(gridvec, matrix);
+    //SUNLinearSolver lin_solver = SUNLinSol_PCG(gridvec, PREC_LEFT, 15);
 
     fprintf(stderr, "Linear solver initialized\n");
 
     ARKStepSStolerances(ark, REL_TOL, ABS_TOL);
     ARKStepSetLinearSolver(ark, lin_solver, matrix);
     ARKStepSetLinear(ark, 0);
-    ARKStepSetDiagnostics(ark, stderr);
+    //ARKBandPrecInit(ark, N, 1, 1);
+    //ARKStepSetDiagnostics(ark, stderr);
     ARKStepSetOrder(ark, 5);
     ARKStepSetOptimalParams(ark);
 
@@ -194,9 +171,9 @@ int main(void){
     realtype t, tret;
     t = TIME_STEP;
 
-    while (true) {
-        ARKStepSetStopTime(ark, t);
-        int r = ARKStepEvolve(ark, t, gridvec, &tret, ARK_NORMAL);
+    int r = 0;
+    while (r == 0) {
+        r = ARKStepEvolve(ark, t, gridvec, &tret, ARK_NORMAL);
         fprintf(stderr, "Time step @%lf\n", t);
         t += TIME_STEP;
         printf("P6\n%d %d\n255\n", (int)S, (int)S);
