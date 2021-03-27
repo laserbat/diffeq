@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <cvode/cvode.h>
+#include <cvode/cvode_diag.h>
 #include <cvode/cvode_bandpre.h>
 #include <nvector/nvector_serial.h>
 #include <sundials/sundials_types.h>
@@ -12,11 +13,11 @@
 #define STENCIL_SIZE 5
 #define BIH_STENCIL_SIZE 7
 
-static const double TIME_STEP = 0.3;
+static const double TIME_STEP = 0.1;
 static const double GRID_STEP = 0.8;
 static const double GS2 = 1.0 / (GRID_STEP * GRID_STEP);
 
-static const sunindextype S = 512;
+static const sunindextype S = 100;
 static const sunindextype N = S * S;
 static const int THREADS = 8;
 
@@ -66,7 +67,7 @@ static const int SHIFT = (STENCIL_SIZE - 1) / 2;
 // Same for biharmonic stencil
 static const int BIH_SHIFT = (BIH_STENCIL_SIZE - 1) / 2;
 
-static const double C_MUL = 50;
+static const double C_MUL = 5;
 static const double C_SCALE[6][2] = {
     {0.05, 0.9},
     {0.003, 0.025},
@@ -123,7 +124,7 @@ int main(void){
     for(int i = 0; i < N; i ++){
         int x  = i % S;
         int y = i / S;
-        grid_data[i] = drand48(); //exp(-100 * hypot(x - S/2.0, y - S/2.0)/hypot(S, S));;
+        grid_data[i] = exp(-50 * hypot(x - S/2.0, y - S/2.0)/hypot(S, S));;
     }
 
     for(int i = 0; i < N; i ++){
@@ -144,13 +145,14 @@ int main(void){
 
     fprintf(stderr, "Set up solver\n");
 
-    SUNLinearSolver linsol = SUNLinSol_SPGMR(gridvec, PREC_NONE, 15);
-    CVodeSetLinearSolver(cv, linsol, NULL);
+    //SUNLinearSolver linsol = SUNLinSol_SPGMR(gridvec, PREC_LEFT, 15);
+    //CVodeSetLinearSolver(cv, linsol, NULL);
 
     SUNNonlinearSolver nonlinsol = SUNNonlinSol_Newton(gridvec);
     CVodeSetNonlinearSolver(cv, nonlinsol);
+    CVDiag(cv);
 
-    //CVBandPrecInit(cv, N, 3, 3);
+    //CVBandPrecInit(cv, N, 1, 1);
 
     realtype t, tret;
     t = TIME_STEP;
