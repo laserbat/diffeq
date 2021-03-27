@@ -2,7 +2,7 @@
 cd "$(dirname "$0")" || exit 1
 shopt -s nocasematch
 
-SUNDIALS_LIB_LIST="arkode nvecopenmp sunlinsollapackband sunmatrixband"
+SUNDIALS_LIB_LIST="arkode nvecopenmp"
 
 COMPILE_THREADS=${COMPILE_THREADS:-6}
 CFLAGS_RELEASE="-Ofast -march=native -fopenmp -flto=$COMPILE_THREADS"

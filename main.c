@@ -5,7 +5,7 @@
 #include <omp.h>
 #include <arkode/arkode_arkstep.h>
 #include <nvector/nvector_openmp.h>
-#include <sunlinsol/sunlinsol_lapackband.h>
+#include <sunlinsol/sunlinsol_band.h>
 #include <sunmatrix/sunmatrix_band.h>
 #include <sundials/sundials_types.h>
 
@@ -178,7 +178,7 @@ int main(void){
     }
 
     void *ark = ARKStepCreate(rhs_ex, rhs_im, 0, gridvec);
-    SUNLinearSolver lin_solver = SUNLinSol_LapackBand(gridvec, matrix);
+    SUNLinearSolver lin_solver = SUNLinSol_Band(gridvec, matrix);
 
     fprintf(stderr, "Linear solver initialized\n");
 
